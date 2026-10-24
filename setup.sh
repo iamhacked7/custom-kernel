@@ -34,7 +34,11 @@ KSU_TAG="${KSU_TAG:-v3.4.2}"
 SUSFS_BRANCH="kernel-4.14"
 LINEAGE_BRANCH="${LINEAGE_BRANCH:-lineage-22.1}"
 DEFCONFIG="arch/arm64/configs/vendor/lineage-a52q_defconfig"
-FRAGMENT="$(cd "$(dirname "$0")" && pwd)/defconfig_fragment.txt"
+# Resolved before any cd: later steps run from inside the kernel tree, so a
+# dirname "$0" taken after that would point at the tree, not this repo. That
+# exact mistake made the CI run fail at "Assemble kernel tree".
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+FRAGMENT="$SELF_DIR/defconfig_fragment.txt"
 
 say() { printf '\n== %s\n' "$*"; }
 
@@ -90,13 +94,18 @@ patch -p1 --forward < 50_add_susfs_in_kernel-4.14.patch || \
 
 # susfs4ksu's non-GKI instruction step 4: stop KernelSU using kprobe hooks.
 say "     matikan kprobe hook di KernelSU (syarat non-GKI susfs)"
-grep -rl '#ifdef CONFIG_KPROBES' KernelSU-Next/kernel/ 2>/dev/null | while read -r f; do
-    sed -i 's/#ifdef CONFIG_KPROBES/#if defined(CONFIG_KPROBES) \&\& 0/g' "$f"
-    echo "   -> $f"
-done
+hits=$(grep -rl '#ifdef CONFIG_KPROBES' KernelSU-Next/kernel/ 2>/dev/null || true)
+if [ -n "$hits" ]; then
+    for f in $hits; do
+        sed -i 's/#ifdef CONFIG_KPROBES/#if defined(CONFIG_KPROBES) \&\& 0/g' "$f"
+        echo "   -> $f"
+    done
+else
+    echo "   (tidak ada kprobe guard tersisa - wajar pada fork susfs-ready)"
+fi
 
 say "4b/5  perbaiki hunk yang reject di tree ini"
-bash "$(cd "$(dirname "$0")" && pwd)/fixups.sh" "$ROOT"
+bash "$SELF_DIR/fixups.sh" "$ROOT"
 
 say "5/5  defconfig"
 cp -f "$DEFCONFIG" "$DEFCONFIG.orig"
@@ -109,7 +118,10 @@ for k in $KEYS; do
     sed -i -E "/^#?[[:space:]]*${k}[=[:space:]]/d" "$DEFCONFIG"
 done
 echo "   key dibersihkan: $(echo "$KEYS" | wc -l)"
-grep -vE '^\s*#' "$FRAGMENT" | grep -vE '^\s*$' >> "$DEFCONFIG"
+# Keep "# CONFIG_X is not set" - that is a real Kconfig directive, not a
+# comment. Stripping every '#' line silently dropped our negations, and
+# Kconfig then fell back to "default y" for KSU_KPROBES_HOOK.
+grep -E '^(CONFIG_[A-Z0-9_]+=|# CONFIG_[A-Z0-9_]+ is not set)' "$FRAGMENT" >> "$DEFCONFIG"
 echo "   fragment diterapkan; cadangan: $DEFCONFIG.orig"
 
 say "selesai"

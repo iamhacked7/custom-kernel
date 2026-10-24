@@ -79,9 +79,14 @@ CONFIG_AUDIT=y
 # ======================================================= (B) ROOT + HIDING
 
 CONFIG_KSU=y
-CONFIG_KSU_MANUAL_HOOK=y
+# Mode hook: fork ini TIDAK punya simbol CONFIG_KSU_MANUAL_HOOK - manual hook
+# berarti sekadar mematikan KSU_KPROBES_HOOK, yang default-nya 'y' dan aktif
+# begitu CONFIG_KPROBES=y. Ini WAJIB mati: README susfs4ksu non-GKI
+# memerintahkan KernelSU tidak memakai kprobe hook sama sekali.
 # CONFIG_KSU_KPROBES_HOOK is not set
-# CONFIG_KSU_SYSCALL_TABLE_HOOK is not set
+# SUS_SU bergantung pada kprobe hook yang aktif; README susfs menyatakan
+# "DO NOT use it if your KernelSU has kprobe disabled".
+# CONFIG_KSU_SUSFS_SUS_SU is not set
 
 CONFIG_KSU_SUSFS=y
 CONFIG_KSU_SUSFS_SUS_PATH=y

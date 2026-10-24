@@ -100,9 +100,18 @@ jobs:
           rm -rf out && mkdir -p out
           make O=out -j$(nproc) vendor/lineage-a52q_defconfig
           # Confirm the flags survived Kconfig resolution, not just the file.
-          for k in CONFIG_FANOTIFY CONFIG_FTRACE_SYSCALLS CONFIG_UPROBE_EVENTS CONFIG_KSU_SUSFS; do
+          for k in CONFIG_FANOTIFY CONFIG_FTRACE_SYSCALLS CONFIG_UPROBES \
+                   CONFIG_UPROBE_EVENTS CONFIG_BPF_SYSCALL CONFIG_KALLSYMS_ALL \
+                   CONFIG_KSU CONFIG_KSU_SUSFS; do
             grep -q "^$k=y" out/.config || { echo "DROPPED by Kconfig: $k"; exit 1; }
           done
+          # These two MUST stay off. KSU_KPROBES_HOOK defaults to y and turns
+          # itself on as soon as CONFIG_KPROBES=y, which susfs4ksu's non-GKI
+          # instructions forbid; SUS_SU is unusable with kprobe hooks disabled.
+          for k in CONFIG_KSU_KPROBES_HOOK CONFIG_KSU_SUSFS_SUS_SU; do
+            grep -q "^# $k is not set" out/.config || { echo "MUST BE OFF: $k"; exit 1; }
+          done
+          echo "konfigurasi terverifikasi"
 
           set -o pipefail
           make O=out -j$(nproc) Image.gz 2>&1 | tee build.log || {
