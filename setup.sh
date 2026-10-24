@@ -16,6 +16,20 @@
 set -euo pipefail
 
 ROOT="${1:-$PWD/a52q-kernel}"
+# Two KernelSU-Next sources, deliberately selectable:
+#
+#   susfs-ready (default) - notfleshka/KernelSU-Next-susfs @ next-v1.5.5.
+#       Its kernel/Kconfig carries 30 CONFIG_KSU_SUSFS entries, i.e. the SUSFS
+#       integration is already done. KernelSU-Next itself is from Nov 2025.
+#
+#   upstream - KernelSU-Next/KernelSU-Next @ v3.4.2 (newest).
+#       Its Kconfig has ZERO KSU_SUSFS entries, so susfs must be hand-ported.
+#       A dry run produced rejects in kernel/Makefile and kernel/selinux/*,
+#       because susfs4ksu patches target official KernelSU (weishu), not Next.
+#
+# The first build exists to get tracing onto the device, so default to the one
+# that boots. Upgrading KernelSU-Next is a separate job.
+KSU_SOURCE="${KSU_SOURCE:-susfs-ready}"
 KSU_TAG="${KSU_TAG:-v3.4.2}"
 SUSFS_BRANCH="kernel-4.14"
 LINEAGE_BRANCH="${LINEAGE_BRANCH:-lineage-22.1}"
@@ -34,10 +48,18 @@ fi
 cd "$ROOT"
 [ -f "$DEFCONFIG" ] || { echo "!! $DEFCONFIG tidak ada - cek nama branch"; exit 1; }
 
-say "2/5  KernelSU-Next $KSU_TAG"
+if [ "$KSU_SOURCE" = "susfs-ready" ]; then
+    say "2/5  KernelSU-Next (fork susfs-ready, next-v1.5.5)"
+    KSU_REPO=https://github.com/notfleshka/KernelSU-Next-susfs.git
+    KSU_REF=next-v1.5.5
+else
+    say "2/5  KernelSU-Next $KSU_TAG (upstream - susfs harus di-port manual)"
+    KSU_REPO=https://github.com/KernelSU-Next/KernelSU-Next.git
+    KSU_REF="$KSU_TAG"
+fi
 rm -rf KernelSU-Next
-git clone --depth=1 -b "$KSU_TAG" \
-    https://github.com/KernelSU-Next/KernelSU-Next.git KernelSU-Next
+git clone --depth=1 -b "$KSU_REF" "$KSU_REPO" KernelSU-Next
+echo "   KSU_SUSFS di Kconfig: $(grep -c 'KSU_SUSFS' KernelSU-Next/kernel/Kconfig 2>/dev/null || echo 0)"
 # The kernel build expects the driver at drivers/kernelsu.
 ln -sfn "../KernelSU-Next/kernel" drivers/kernelsu
 grep -q 'kernelsu' drivers/Makefile || \
@@ -51,12 +73,18 @@ git clone --depth=1 -b "$SUSFS_BRANCH" \
     https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs4ksu
 cp -v /tmp/susfs4ksu/kernel_patches/fs/* fs/
 cp -v /tmp/susfs4ksu/kernel_patches/include/linux/* include/linux/
-cp -v /tmp/susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch KernelSU-Next/
+if [ "$KSU_SOURCE" != "susfs-ready" ]; then
+    cp -v /tmp/susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch KernelSU-Next/
+else
+    echo "   (lewati 10_enable_susfs_for_ksu.patch - fork sudah ter-integrasi)"
+fi
 cp -v /tmp/susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.14.patch ./
 
 say "4/5  terapkan patch"
-( cd KernelSU-Next && patch -p1 --forward < 10_enable_susfs_for_ksu.patch ) || \
-    echo "   !! sebagian patch KSU gagal - rapikan manual (wajar, tree berbeda)"
+if [ -f KernelSU-Next/10_enable_susfs_for_ksu.patch ]; then
+    ( cd KernelSU-Next && patch -p1 --forward < 10_enable_susfs_for_ksu.patch ) || \
+        echo "   !! sebagian patch KSU gagal - rapikan manual (wajar, tree berbeda)"
+fi
 patch -p1 --forward < 50_add_susfs_in_kernel-4.14.patch || \
     echo "   !! sebagian patch kernel gagal - rapikan manual"
 
@@ -69,9 +97,15 @@ done
 
 say "5/5  defconfig"
 cp -f "$DEFCONFIG" "$DEFCONFIG.orig"
-# Drop any existing setting for a key we are about to define, then append.
-grep -vE '^#?\s*(CONFIG_KPROBES|CONFIG_KPROBE_EVENTS|CONFIG_KRETPROBES|CONFIG_FTRACE_SYSCALLS|CONFIG_DYNAMIC_FTRACE|CONFIG_FUNCTION_TRACER|CONFIG_FANOTIFY|CONFIG_FANOTIFY_ACCESS_PERMISSIONS|CONFIG_KSU)' \
-    "$DEFCONFIG.orig" > "$DEFCONFIG"
+# Derive the key list from the fragment itself so this cannot go stale when the
+# fragment grows. Any prior setting for those keys is dropped, then the
+# fragment is appended as the single source of truth.
+KEYS=$(grep -oE '^#?\s*CONFIG_[A-Z0-9_]+' "$FRAGMENT" | tr -d '# ' | sort -u)
+cp "$DEFCONFIG.orig" "$DEFCONFIG"
+for k in $KEYS; do
+    sed -i -E "/^#?[[:space:]]*${k}[=[:space:]]/d" "$DEFCONFIG"
+done
+echo "   key dibersihkan: $(echo "$KEYS" | wc -l)"
 grep -vE '^\s*#' "$FRAGMENT" | grep -vE '^\s*$' >> "$DEFCONFIG"
 echo "   fragment diterapkan; cadangan: $DEFCONFIG.orig"
 

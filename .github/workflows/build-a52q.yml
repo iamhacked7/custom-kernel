@@ -45,7 +45,12 @@ jobs:
       - name: Verify the diagnostic flags actually landed
         run: |
           D="$GITHUB_WORKSPACE/a52q-kernel/arch/arm64/configs/vendor/lineage-a52q_defconfig"
-          for k in CONFIG_FANOTIFY CONFIG_FTRACE_SYSCALLS CONFIG_KPROBES CONFIG_KSU CONFIG_KSU_SUSFS; do
+          # Fail fast if any observability flag silently failed to land - a
+          # kernel without these is useless for the one job it exists to do.
+          for k in CONFIG_FANOTIFY CONFIG_FTRACE_SYSCALLS CONFIG_KPROBES \
+                   CONFIG_KPROBE_EVENTS CONFIG_UPROBES CONFIG_UPROBE_EVENTS \
+                   CONFIG_BPF_SYSCALL CONFIG_KALLSYMS_ALL \
+                   CONFIG_KSU CONFIG_KSU_SUSFS; do
             grep -q "^$k=y" "$D" || { echo "MISSING: $k"; exit 1; }
             echo "ok: $k"
           done

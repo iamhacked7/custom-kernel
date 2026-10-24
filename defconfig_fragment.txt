@@ -3,34 +3,81 @@
 # Dibagi dua tujuan yang berbeda, jangan dicampur pengertiannya:
 #
 #  (A) DIAGNOSIS — alasan utama build ini. Kernel stock A52 tidak mengompilasi
-#      satu pun alat pelacakan, sehingga hari ini mustahil melihat probe apa
-#      yang BERHASIL dibaca Garuda Defender (fanotify -> ENOSYS, ftrace
-#      syscall -> events/syscalls tidak ada, sampling -> 0 tangkapan,
-#      ptrace -> terpicu anti-debug). Tiga flag ini membuka itu.
+#      satu pun alat pelacakan, sehingga mustahil melihat probe apa yang
+#      BERHASIL dibaca Garuda Defender (fanotify -> ENOSYS, ftrace syscall ->
+#      events/syscalls tidak ada, sampling -> 0 tangkapan dari ribuan syscall,
+#      ptrace -> terpicu anti-debug dan proses dibunuh).
 #
-#  (B) ROOT + HIDING — KernelSU-Next + SUSFS. Mode hook sengaja MANUAL, bukan
-#      kprobe/tracepoint: README susfs4ksu cabang kernel-4.14 memerintahkan
-#      kprobe hook dimatikan untuk non-GKI. CONFIG_KPROBES di bawah tetap =y,
-#      tapi itu untuk infrastruktur probe kita sendiri, bukan untuk hook KSU.
-#      Keduanya tidak bertabrakan.
+#  (B) ROOT + HIDING — KernelSU-Next + SUSFS. Mode hook sengaja MANUAL:
+#      README susfs4ksu cabang kernel-4.14 memerintahkan kprobe hook dimatikan
+#      untuk non-GKI. CONFIG_KPROBES di bawah tetap =y, tapi itu untuk
+#      infrastruktur probe KITA, bukan hook KSU. Keduanya tidak bertabrakan.
 
-# ---------------------------------------------------------------- (A)
+# ============================================================ (A) DIAGNOSIS
+
+# --- Syscall: setiap permintaan app ke kernel, lengkap dengan argumen ---
 # Status awal di lineage-a52q_defconfig (sudah diverifikasi):
-#   CONFIG_HAVE_SYSCALL_TRACEPOINTS=y   <- sudah ada
-#   CONFIG_TRACEPOINTS=y                <- sudah ada
-#   CONFIG_FTRACE=y                     <- sudah ada
-#   # CONFIG_KPROBES is not set        <- diubah di bawah
-#   # CONFIG_FTRACE_SYSCALLS is not set<- diubah di bawah
-CONFIG_KPROBES=y
-CONFIG_KPROBE_EVENTS=y
-CONFIG_KRETPROBES=y
+#   CONFIG_HAVE_SYSCALL_TRACEPOINTS=y  CONFIG_TRACEPOINTS=y  CONFIG_FTRACE=y
+#   # CONFIG_KPROBES is not set   # CONFIG_FTRACE_SYSCALLS is not set
+CONFIG_FTRACE=y
 CONFIG_FTRACE_SYSCALLS=y
 CONFIG_DYNAMIC_FTRACE=y
 CONFIG_FUNCTION_TRACER=y
+CONFIG_FUNCTION_GRAPH_TRACER=y
+CONFIG_EVENT_TRACING=y
+CONFIG_HIST_TRIGGERS=y
+CONFIG_TRACER_SNAPSHOT=y
+
+# --- Berkas: setiap open, event-driven, tidak ada yang terlewat ---
+# Sampling /proc/<tid>/syscall menangkap 0 dari ribuan syscall karena syscall
+# selesai jauh lebih cepat daripada pemindai. fanotify dilapor kernel.
 CONFIG_FANOTIFY=y
 CONFIG_FANOTIFY_ACCESS_PERMISSIONS=y
+CONFIG_INOTIFY_USER=y
 
-# ---------------------------------------------------------------- (B)
+# --- Kprobe: probe fungsi kernel mana pun ---
+CONFIG_KPROBES=y
+CONFIG_KPROBE_EVENTS=y
+CONFIG_KRETPROBES=y
+CONFIG_HAVE_KPROBES=y
+CONFIG_HAVE_REGS_AND_STACK_ACCESS_API=y
+
+# --- Uprobe: INI YANG MENUTUP CELAH TERBESAR ---
+# dl_iterate_phdr menelusuri link_map DI DALAM memori proses tanpa syscall
+# sama sekali, jadi pemindaian modul lewat jalur itu TIDAK TERLIHAT oleh
+# FTRACE_SYSCALLS. Uprobe memasang probe pada fungsi userspace dari sisi
+# kernel - tanpa ptrace, jadi anti-debug aplikasi tidak punya apa pun untuk
+# dideteksi. Ini membuat dl_iterate_phdr, dlopen, dan fungsi libc lain bisa
+# diamati beserta argumennya.
+CONFIG_UPROBES=y
+CONFIG_UPROBE_EVENTS=y
+CONFIG_ARCH_SUPPORTS_UPROBES=y
+
+# --- BPF: pelacakan terprogram (bpftrace) ---
+CONFIG_BPF=y
+CONFIG_BPF_SYSCALL=y
+CONFIG_BPF_EVENTS=y
+CONFIG_BPF_JIT=y
+
+# --- Simbol & stack: supaya tahu SIAPA pemanggilnya, bukan cuma apa ---
+CONFIG_KALLSYMS=y
+CONFIG_KALLSYMS_ALL=y
+CONFIG_STACKTRACE=y
+CONFIG_STACK_TRACER=y
+CONFIG_DEBUG_FS=y
+CONFIG_PROC_KCORE=y
+
+# --- SELinux: izinkan mode permissive per-domain ---
+# PERINGATAN, baca sebelum memakai: membuat untrusted_app permissive akan
+# mencatat SEMUA akses (bukan cuma yang ditolak), tapi juga MENGUBAH hasil -
+# app jadi berhasil membaca /proc/modules dan osrelease yang selama ini
+# ditolak, sehingga verdict-nya bisa berbeda. Pakai untuk memetakan apa yang
+# DICOBA, lalu kembalikan ke enforcing sebelum mengukur verdict sebenarnya.
+CONFIG_SECURITY_SELINUX_DEVELOP=y
+CONFIG_AUDIT=y
+
+# ======================================================= (B) ROOT + HIDING
+
 CONFIG_KSU=y
 CONFIG_KSU_MANUAL_HOOK=y
 # CONFIG_KSU_KPROBES_HOOK is not set
