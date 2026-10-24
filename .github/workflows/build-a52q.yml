@@ -1,14 +1,26 @@
 name: Build a52q — KSU-Next + SUSFS + Diagnostics
 
-# Builds the diagnostic kernel: KernelSU-Next with manual hook (required by
-# susfs4ksu on non-GKI) plus SUSFS v1.5.5, and crucially FANOTIFY +
-# FTRACE_SYSCALLS + KPROBES so the detection sweep can finally be observed.
+# Diagnostic kernel for SM-A525F (a52q / SM7125 "atoll", 4.14.190).
+# KernelSU-Next with manual hook (required by susfs4ksu on non-GKI) plus
+# SUSFS v1.5.5, and crucially FANOTIFY + FTRACE_SYSCALLS + KPROBES + UPROBES
+# so the detection sweep can finally be observed.
+#
+# Toolchain and build target are taken from a workflow proven on this exact
+# device tree (AlfCraft07/android_kernel_samsung_sm7125, .github/workflows/
+# a52q.yml), not guessed:
+#   - Proton Clang by git clone. The AOSP googlesource "+archive" tarball URL
+#     does not return valid gzip and broke the first run here.
+#   - Target Image.gz, not Image.gz-dtb: this defconfig sets
+#     CONFIG_BUILD_ARM64_DT_OVERLAY=y (verified), so Image.gz-dtb would pull in
+#     the dtbs target and fail on overlays that the bootloader applies anyway.
 on:
   workflow_dispatch:
     inputs:
-      ksu_tag:
-        description: "KernelSU-Next tag"
-        default: "v3.4.2"
+      ksu_source:
+        description: "KernelSU-Next source"
+        type: choice
+        default: "susfs-ready"
+        options: [susfs-ready, upstream]
       lineage_branch:
         description: "LineageOS kernel branch"
         default: "lineage-22.1"
@@ -17,70 +29,93 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout helper files
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Install build deps
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            bc bison flex libssl-dev build-essential curl git zip \
-            python3 ccache libelf-dev
+            bc bison flex build-essential curl git zip unzip rsync wget \
+            libssl-dev libelf-dev libncurses5-dev ca-certificates dwarves \
+            device-tree-compiler python3 ccache \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            gcc-arm-linux-gnueabi binutils-arm-linux-gnueabi
 
-      - name: Fetch AOSP clang
+      - name: Cache Proton Clang
+        id: cache-clang
+        uses: actions/cache@v4
+        with:
+          path: ~/toolchains/clang
+          key: proton-clang-v1
+
+      - name: Fetch Proton Clang
+        if: steps.cache-clang.outputs.cache-hit != 'true'
         run: |
-          mkdir -p "$GITHUB_WORKSPACE/clang"
-          # Pinned so a toolchain bump cannot silently change the result.
-          curl -L -o clang.tar.gz \
-            https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r487747c.tar.gz
-          tar -xzf clang.tar.gz -C "$GITHUB_WORKSPACE/clang"
-          "$GITHUB_WORKSPACE/clang/bin/clang" --version | head -1
+          mkdir -p ~/toolchains
+          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git ~/toolchains/clang
+
+      - name: Verify toolchain
+        run: |
+          export PATH="$HOME/toolchains/clang/bin:$PATH"
+          clang --version | head -1
+          aarch64-linux-gnu-ld --version | head -1
 
       - name: Assemble kernel tree
         env:
-          KSU_TAG: ${{ github.event.inputs.ksu_tag }}
+          KSU_SOURCE: ${{ github.event.inputs.ksu_source }}
           LINEAGE_BRANCH: ${{ github.event.inputs.lineage_branch }}
         run: bash ./setup.sh "$GITHUB_WORKSPACE/a52q-kernel"
 
-      - name: Verify the diagnostic flags actually landed
+      - name: Verify integration landed
         run: |
-          D="$GITHUB_WORKSPACE/a52q-kernel/arch/arm64/configs/vendor/lineage-a52q_defconfig"
-          # Fail fast if any observability flag silently failed to land - a
-          # kernel without these is useless for the one job it exists to do.
+          cd "$GITHUB_WORKSPACE/a52q-kernel"
+          D=arch/arm64/configs/vendor/lineage-a52q_defconfig
+          # Observability is the whole point of this build; a kernel missing
+          # any of these is useless for the job it exists to do.
           for k in CONFIG_FANOTIFY CONFIG_FTRACE_SYSCALLS CONFIG_KPROBES \
                    CONFIG_KPROBE_EVENTS CONFIG_UPROBES CONFIG_UPROBE_EVENTS \
                    CONFIG_BPF_SYSCALL CONFIG_KALLSYMS_ALL \
                    CONFIG_KSU CONFIG_KSU_SUSFS; do
             grep -q "^$k=y" "$D" || { echo "MISSING: $k"; exit 1; }
-            echo "ok: $k"
           done
-          test -f "$GITHUB_WORKSPACE/a52q-kernel/fs/susfs.c" || { echo "MISSING fs/susfs.c"; exit 1; }
-          echo "ok: fs/susfs.c"
-          # fs/namespace.c references these symbols throughout; without the
-          # declaration block the build fails outright, so check it explicitly.
-          N="$GITHUB_WORKSPACE/a52q-kernel/fs/namespace.c"
-          grep -q 'DEFINE_IDA(susfs_mnt_id_ida)' "$N" || { echo "MISSING susfs decls in namespace.c"; exit 1; }
-          grep -q 'bypass_orig_flow_clone_mnt' "$N" || { echo "MISSING clone_mnt susfs block"; exit 1; }
-          echo "ok: fs/namespace.c susfs decls + clone_mnt"
+          test -f fs/susfs.c || { echo "MISSING fs/susfs.c"; exit 1; }
+          # fs/namespace.c references these throughout; without the declaration
+          # block restored by fixups.sh the build cannot compile.
+          grep -q 'DEFINE_IDA(susfs_mnt_id_ida)' fs/namespace.c || { echo "MISSING susfs decls"; exit 1; }
+          grep -q 'bypass_orig_flow_clone_mnt' fs/namespace.c || { echo "MISSING clone_mnt block"; exit 1; }
+          echo "semua terverifikasi"
 
-      - name: Build
+      - name: Compile
         working-directory: a52q-kernel
         run: |
-          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+          export PATH="$HOME/toolchains/clang/bin:$PATH"
           export ARCH=arm64 SUBARCH=arm64
-          MAKE="make -j$(nproc) O=out ARCH=arm64 CC=clang \
-                CLANG_TRIPLE=aarch64-linux-gnu- \
-                CROSS_COMPILE=aarch64-linux-gnu- \
-                LLVM=1 LLVM_IAS=1"
-          $MAKE vendor/lineage-a52q_defconfig
-          $MAKE 2>&1 | tail -40
-          ls -l out/arch/arm64/boot/Image* || true
+          export CC=clang
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CROSS_COMPILE64=aarch64-linux-gnu-
+          export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export LLVM=1 LLVM_IAS=1
 
-      - name: Upload Image
+          rm -rf out && mkdir -p out
+          make O=out -j$(nproc) vendor/lineage-a52q_defconfig
+          # Confirm the flags survived Kconfig resolution, not just the file.
+          for k in CONFIG_FANOTIFY CONFIG_FTRACE_SYSCALLS CONFIG_UPROBE_EVENTS CONFIG_KSU_SUSFS; do
+            grep -q "^$k=y" out/.config || { echo "DROPPED by Kconfig: $k"; exit 1; }
+          done
+
+          set -o pipefail
+          make O=out -j$(nproc) Image.gz 2>&1 | tee build.log || {
+            echo "=== 120 baris terakhir ==="; tail -120 build.log; exit 1; }
+          ls -l out/arch/arm64/boot/Image.gz
+
+      - name: Upload
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: a52q-Image-KSUNext-SUSFS-diag
+          name: a52q-KSUNext-SUSFS-diag
           path: |
-            a52q-kernel/out/arch/arm64/boot/Image*
+            a52q-kernel/out/arch/arm64/boot/Image.gz
             a52q-kernel/out/.config
-          if-no-files-found: error
+            a52q-kernel/build.log
+          if-no-files-found: warn
