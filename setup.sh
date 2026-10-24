@@ -95,6 +95,9 @@ grep -rl '#ifdef CONFIG_KPROBES' KernelSU-Next/kernel/ 2>/dev/null | while read 
     echo "   -> $f"
 done
 
+say "4b/5  perbaiki hunk yang reject di tree ini"
+bash "$(cd "$(dirname "$0")" && pwd)/fixups.sh" "$ROOT"
+
 say "5/5  defconfig"
 cp -f "$DEFCONFIG" "$DEFCONFIG.orig"
 # Derive the key list from the fragment itself so this cannot go stale when the

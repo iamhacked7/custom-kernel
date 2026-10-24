@@ -56,6 +56,12 @@ jobs:
           done
           test -f "$GITHUB_WORKSPACE/a52q-kernel/fs/susfs.c" || { echo "MISSING fs/susfs.c"; exit 1; }
           echo "ok: fs/susfs.c"
+          # fs/namespace.c references these symbols throughout; without the
+          # declaration block the build fails outright, so check it explicitly.
+          N="$GITHUB_WORKSPACE/a52q-kernel/fs/namespace.c"
+          grep -q 'DEFINE_IDA(susfs_mnt_id_ida)' "$N" || { echo "MISSING susfs decls in namespace.c"; exit 1; }
+          grep -q 'bypass_orig_flow_clone_mnt' "$N" || { echo "MISSING clone_mnt susfs block"; exit 1; }
+          echo "ok: fs/namespace.c susfs decls + clone_mnt"
 
       - name: Build
         working-directory: a52q-kernel
