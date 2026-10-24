@@ -1,0 +1,75 @@
+name: Build a52q — KSU-Next + SUSFS + Diagnostics
+
+# Builds the diagnostic kernel: KernelSU-Next with manual hook (required by
+# susfs4ksu on non-GKI) plus SUSFS v1.5.5, and crucially FANOTIFY +
+# FTRACE_SYSCALLS + KPROBES so the detection sweep can finally be observed.
+on:
+  workflow_dispatch:
+    inputs:
+      ksu_tag:
+        description: "KernelSU-Next tag"
+        default: "v3.4.2"
+      lineage_branch:
+        description: "LineageOS kernel branch"
+        default: "lineage-22.1"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout helper files
+        uses: actions/checkout@v4
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            bc bison flex libssl-dev build-essential curl git zip \
+            python3 ccache libelf-dev
+
+      - name: Fetch AOSP clang
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/clang"
+          # Pinned so a toolchain bump cannot silently change the result.
+          curl -L -o clang.tar.gz \
+            https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r487747c.tar.gz
+          tar -xzf clang.tar.gz -C "$GITHUB_WORKSPACE/clang"
+          "$GITHUB_WORKSPACE/clang/bin/clang" --version | head -1
+
+      - name: Assemble kernel tree
+        env:
+          KSU_TAG: ${{ github.event.inputs.ksu_tag }}
+          LINEAGE_BRANCH: ${{ github.event.inputs.lineage_branch }}
+        run: bash ./setup.sh "$GITHUB_WORKSPACE/a52q-kernel"
+
+      - name: Verify the diagnostic flags actually landed
+        run: |
+          D="$GITHUB_WORKSPACE/a52q-kernel/arch/arm64/configs/vendor/lineage-a52q_defconfig"
+          for k in CONFIG_FANOTIFY CONFIG_FTRACE_SYSCALLS CONFIG_KPROBES CONFIG_KSU CONFIG_KSU_SUSFS; do
+            grep -q "^$k=y" "$D" || { echo "MISSING: $k"; exit 1; }
+            echo "ok: $k"
+          done
+          test -f "$GITHUB_WORKSPACE/a52q-kernel/fs/susfs.c" || { echo "MISSING fs/susfs.c"; exit 1; }
+          echo "ok: fs/susfs.c"
+
+      - name: Build
+        working-directory: a52q-kernel
+        run: |
+          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+          export ARCH=arm64 SUBARCH=arm64
+          MAKE="make -j$(nproc) O=out ARCH=arm64 CC=clang \
+                CLANG_TRIPLE=aarch64-linux-gnu- \
+                CROSS_COMPILE=aarch64-linux-gnu- \
+                LLVM=1 LLVM_IAS=1"
+          $MAKE vendor/lineage-a52q_defconfig
+          $MAKE 2>&1 | tail -40
+          ls -l out/arch/arm64/boot/Image* || true
+
+      - name: Upload Image
+        uses: actions/upload-artifact@v4
+        with:
+          name: a52q-Image-KSUNext-SUSFS-diag
+          path: |
+            a52q-kernel/out/arch/arm64/boot/Image*
+            a52q-kernel/out/.config
+          if-no-files-found: error

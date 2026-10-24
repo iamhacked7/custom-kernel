@@ -1,0 +1,52 @@
+# Fragment untuk arch/arm64/configs/vendor/lineage-a52q_defconfig
+#
+# Dibagi dua tujuan yang berbeda, jangan dicampur pengertiannya:
+#
+#  (A) DIAGNOSIS — alasan utama build ini. Kernel stock A52 tidak mengompilasi
+#      satu pun alat pelacakan, sehingga hari ini mustahil melihat probe apa
+#      yang BERHASIL dibaca Garuda Defender (fanotify -> ENOSYS, ftrace
+#      syscall -> events/syscalls tidak ada, sampling -> 0 tangkapan,
+#      ptrace -> terpicu anti-debug). Tiga flag ini membuka itu.
+#
+#  (B) ROOT + HIDING — KernelSU-Next + SUSFS. Mode hook sengaja MANUAL, bukan
+#      kprobe/tracepoint: README susfs4ksu cabang kernel-4.14 memerintahkan
+#      kprobe hook dimatikan untuk non-GKI. CONFIG_KPROBES di bawah tetap =y,
+#      tapi itu untuk infrastruktur probe kita sendiri, bukan untuk hook KSU.
+#      Keduanya tidak bertabrakan.
+
+# ---------------------------------------------------------------- (A)
+# Status awal di lineage-a52q_defconfig (sudah diverifikasi):
+#   CONFIG_HAVE_SYSCALL_TRACEPOINTS=y   <- sudah ada
+#   CONFIG_TRACEPOINTS=y                <- sudah ada
+#   CONFIG_FTRACE=y                     <- sudah ada
+#   # CONFIG_KPROBES is not set        <- diubah di bawah
+#   # CONFIG_FTRACE_SYSCALLS is not set<- diubah di bawah
+CONFIG_KPROBES=y
+CONFIG_KPROBE_EVENTS=y
+CONFIG_KRETPROBES=y
+CONFIG_FTRACE_SYSCALLS=y
+CONFIG_DYNAMIC_FTRACE=y
+CONFIG_FUNCTION_TRACER=y
+CONFIG_FANOTIFY=y
+CONFIG_FANOTIFY_ACCESS_PERMISSIONS=y
+
+# ---------------------------------------------------------------- (B)
+CONFIG_KSU=y
+CONFIG_KSU_MANUAL_HOOK=y
+# CONFIG_KSU_KPROBES_HOOK is not set
+# CONFIG_KSU_SYSCALL_TABLE_HOOK is not set
+
+CONFIG_KSU_SUSFS=y
+CONFIG_KSU_SUSFS_SUS_PATH=y
+CONFIG_KSU_SUSFS_SUS_MOUNT=y
+CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y
+CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y
+CONFIG_KSU_SUSFS_SUS_KSTAT=y
+CONFIG_KSU_SUSFS_TRY_UMOUNT=y
+CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y
+CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+CONFIG_KSU_SUSFS_ENABLE_LOG=y
+CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
+CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
+CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
+CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y
